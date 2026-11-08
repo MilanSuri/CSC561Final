@@ -23,7 +23,7 @@ RAYDIUM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
 
 COMMITMENT = "processed"
 
-DATA_DIR = Path("data")
+DATA_DIR = Path("../../data")
 
 RAW_FILE = DATA_DIR / "raw_transactions.jsonl"
 CSV_FILE = DATA_DIR / "transaction_features.csv"
