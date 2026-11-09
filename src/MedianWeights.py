@@ -1,11 +1,7 @@
 import polars as pl
 from pathlib import Path
 
-
-# --------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------
-
+# Establishing directories, features thresholds, and global vars
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
@@ -26,11 +22,7 @@ FEATURES = [
     "token_balance_change_count",
 ]
 
-
-# --------------------------------------------------
-# LOAD DATA
-# --------------------------------------------------
-
+# Data loader function
 def load_data():
 
     if not REAL_FILE.exists():
@@ -81,11 +73,7 @@ def load_data():
 
     return combined_df
 
-
-# --------------------------------------------------
-# RUNNING MEDIAN
-# --------------------------------------------------
-
+# calculate the medians
 def calculate_running_medians(df):
 
     results = df
@@ -105,11 +93,7 @@ def calculate_running_medians(df):
 
     return results
 
-
-# --------------------------------------------------
-# RUNNING MAD AND OUTLIER DETECTION
-# --------------------------------------------------
-
+# Determine if outliers or not
 def calculate_mad_weights(df):
 
     results = df
@@ -226,10 +210,6 @@ def calculate_feature_weights(df):
 
     return weights
 
-
-# --------------------------------------------------
-# MAIN
-# --------------------------------------------------
 
 def main():
 

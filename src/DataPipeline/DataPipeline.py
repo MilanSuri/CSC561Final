@@ -11,10 +11,7 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 
-
-# --------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------
+# Establish the global vars, files, and IDs, SSL, etc being used throughout the file
 
 WSS_URL = os.getenv("WSS_URL")
 RPC_URL = os.getenv("RPC_URL")
@@ -36,10 +33,7 @@ RETRY_ATTEMPTS = 5
 RETRY_DELAY = 1.0
 
 
-# --------------------------------------------------
-# CSV COLUMNS
-# --------------------------------------------------
-
+# cols
 CSV_FIELDS = [
     "signature",
     "slot",
@@ -61,11 +55,7 @@ CSV_FIELDS = [
     "account_keys",
 ]
 
-
-# --------------------------------------------------
-# FILE SETUP
-# --------------------------------------------------
-
+# file set up
 def initialize_files():
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -90,10 +80,7 @@ def initialize_files():
     print(f"CSV feature file: {CSV_FILE}")
 
 
-# --------------------------------------------------
-# TIMESTAMP
-# --------------------------------------------------
-
+# timestamp each txn
 def utc_now():
 
     return datetime.now(
@@ -101,10 +88,7 @@ def utc_now():
     ).isoformat()
 
 
-# --------------------------------------------------
-# JSONL WRITER
-# --------------------------------------------------
-
+# write a json w the txns
 def write_jsonl(data):
 
     with open(
@@ -118,10 +102,7 @@ def write_jsonl(data):
         )
 
 
-# --------------------------------------------------
-# CSV WRITER
-# --------------------------------------------------
-
+# write csv with txns
 def write_csv(row):
 
     with open(
@@ -140,10 +121,7 @@ def write_csv(row):
         writer.writerow(row)
 
 
-# --------------------------------------------------
-# GET TRANSACTION METADATA
-# --------------------------------------------------
-
+# get txn metadata
 async def get_transaction(session, signature):
 
     payload = {
@@ -234,11 +212,7 @@ async def get_transaction(session, signature):
 
     return None
 
-
-# --------------------------------------------------
-# EXTRACT TRANSACTION FEATURES
-# --------------------------------------------------
-
+# get the tx/txn features
 def extract_features(tx, notification):
 
     transaction = tx.get("transaction", {})
@@ -478,11 +452,7 @@ def extract_features(tx, notification):
 
     return row
 
-
-# --------------------------------------------------
-# WEBSOCKET STREAM
-# --------------------------------------------------
-
+# stream from hyperliquid
 async def stream_transactions():
 
     if not WSS_URL:
@@ -696,11 +666,6 @@ async def stream_transactions():
                 print(
                     f"CSV updated: {CSV_FILE}"
                 )
-
-
-# --------------------------------------------------
-# MAIN
-# --------------------------------------------------
 
 async def main():
 

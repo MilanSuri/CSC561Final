@@ -5,17 +5,14 @@ import numpy as np
 from pathlib import Path
 
 
-# --------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------
-
+#I/O and params
 INPUT_FILE = Path("../../data/transaction_features.csv")
 OUTPUT_FILE = Path("../../data/synthetic_transactions.csv")
 
 SYNTHETIC_ROWS = 1000
 RANDOM_SEED = 42
 
-
+# Features generated for
 FEATURES = [
     "compute_units",
     "total_fee_lamports",
@@ -26,10 +23,8 @@ FEATURES = [
 ]
 
 
-# --------------------------------------------------
-# LOAD REAL DATA
-# --------------------------------------------------
 
+# Load steamed data
 def load_real_data():
 
     if not INPUT_FILE.exists():
@@ -57,11 +52,7 @@ def load_real_data():
 
     return df
 
-
-# --------------------------------------------------
-# GENERATE SYNTHETIC DATA
-# --------------------------------------------------
-
+# Generate random synthetic data per feature
 def generate_synthetic_data(df):
 
     rng = np.random.default_rng(RANDOM_SEED)
@@ -117,11 +108,6 @@ def generate_synthetic_data(df):
     ])
 
     return synthetic_df
-
-
-# --------------------------------------------------
-# MAIN
-# --------------------------------------------------
 
 def main():
 
