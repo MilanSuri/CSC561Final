@@ -129,3 +129,193 @@ class WeightedIsolationTree:
                 node_id = node["right"]
 
             depth += 1
+
+
+class WeightedIsolationForest:
+    """
+    Reusable Weighted Isolation Forest.
+
+    Feature weights control the probability of selecting each
+    feature when creating a random split.
+
+    Higher anomaly scores indicate more unusual observations.
+    """
+
+    def __init__(self, n_estimators=200, max_samples=512, feature_weights=None, contamination=0.05, random_state=42, ):
+        # Constructor for the tree has pre-set vals but allows user to define their own.
+        self.n_estimators = n_estimators
+        self.max_samples = max_samples
+        self.feature_weights = feature_weights
+        self.contamination = contamination
+        self.random_state = random_state
+
+        self.trees = []
+        self.threshold = None
+        self.sample_size = None
+        self.n_features = None
+
+    def fit(self, X):
+        # This is the method for fitting the forest that allows us to take the data and then train the model
+
+        X = np.asarray(X, dtype=float)
+
+        # Validation checks for ensuring that it's a 2D array and that it is finite
+        if X.ndim != 2:
+            raise ValueError("Input data must be a 2D array.")
+
+        if not np.isfinite(X).all():
+            raise ValueError("Training data contains invalid values.")
+
+        n_samples, n_features = X.shape
+
+        # Get the number of samples from the features, so needs more than 1txn
+        if n_samples < 2:
+            raise ValueError("At least two observations are required.")
+        # Needs features
+        if n_features < 1:
+            raise ValueError("At least one feature is required.")
+        # At least one tree
+        if self.n_estimators < 1:
+            raise ValueError("n_estimators must be positive.")
+        # Must have multiple samples
+        if self.max_samples < 2:
+            raise ValueError("max_samples must be at least 2.")
+        # Can't assume half of behavior is abnormal
+        if not 0 < self.contamination < 0.5:
+            raise ValueError("Contamination must be between 0 and 0.5.")
+
+        # Default to equal feature weights.
+        if self.feature_weights is None:
+            self.feature_weights = (np.ones(n_features) / n_features)
+
+        # get the feature weights
+        self.feature_weights = np.asarray(self.feature_weights, dtype=float,).copy()
+
+        if len(self.feature_weights) != n_features:
+            raise ValueError("Feature weight count does not match feature count.")
+
+        if (not np.isfinite(self.feature_weights).all() or np.any(self.feature_weights < 0) or self.feature_weights.sum() <= 0):
+            raise ValueError("Invalid feature weights.")
+
+        # Normalize weights.
+        self.feature_weights /= self.feature_weights.sum()
+
+        self.n_features = n_features
+        self.sample_size = min(self.max_samples, n_samples)
+
+        max_depth = int(np.ceil(np.log2(self.sample_size)))
+
+        rng = np.random.default_rng(self.random_state)
+
+        self.trees = []
+
+        print("\nBuilding weighted isolation trees")
+
+        # Loop through the estimators and then create isolation trees to create the forest
+        for i in range(self.n_estimators):
+            sample_indices = rng.choice(n_samples, size=self.sample_size, replace=False,)
+
+            sample = X[sample_indices]
+
+            # Create the isolation trees
+            tree = WeightedIsolationTree(
+                feature_weights=self.feature_weights,
+                max_depth=max_depth,
+                random_state=int(
+                    rng.integers(0, 2**32 - 1)
+                ),
+            )
+
+            tree.fit(sample)
+
+            self.trees.append(tree)
+
+            if (i + 1) % 25 == 0:
+                print(f"Built {i + 1}/{self.n_estimators} trees.")
+
+        self.threshold = None
+        print("Weighted forest training complete.")
+
+        return self
+
+    def score_samples(self, X):
+        # Get the scores for the trees based on the depth after training
+
+        X = np.asarray(X, dtype=float)
+
+        # Validation to ensure the data and training fulfill expectations
+        if not self.trees:
+            raise ValueError("Model has not been trained.")
+
+        if X.ndim != 2:
+            raise ValueError("Input data must be a 2D array.")
+
+        if X.shape[1] != self.n_features:
+            raise ValueError("Input feature count does not match training data.")
+
+        if not np.isfinite(X).all():
+            raise ValueError("Input data contains invalid values.")
+
+        # Validation for too small sample size
+        if self.sample_size <= 1:
+            return np.full(len(X), 0.5)
+
+        path_lengths = np.zeros(len(X))
+
+        # Calculate the path lengths for each tree in the feature
+        for tree in self.trees:
+            for i, observation in enumerate(X):
+                path_lengths[i] += tree.path_length(observation)
+
+        # Get the average length and normalize to a 0 to 1 scale
+        average_paths = path_lengths / len(self.trees)
+        normalization = average_path_length(self.sample_size)
+
+        if normalization == 0:
+            return np.full(len(X), 0.5)
+
+        # Higher score = more anomalous.
+        return np.power(2.0, -average_paths / normalization,)
+
+    def calibrate(self, X_calibration):
+        """
+        Set the anomaly threshold using a separate calibration dataset.
+
+        The calibration data should be real observations that were
+        not used to train the forest.
+        """
+
+        scores = self.score_samples(X_calibration)
+
+        # Finds the 95th percentile score in the calibration dataset of anomaly scores
+        self.threshold = float( np.quantile(scores, 1.0 - self.contamination,) )
+        print(f"Anomaly threshold calibrated: {self.threshold:.6f}")
+
+        return self
+
+    def predict(self, X):
+
+        # Validation for if there's no calibration
+        if self.threshold is None:
+            raise ValueError("Model threshold has not been calibrated.")
+
+        # gets the scores for the inputs
+        scores = self.score_samples(X)
+
+        # 1 = anomaly, 0 = normal. If above the threshold (95th percentile they're anomaly)
+        return (scores >= self.threshold).astype(int)
+
+    def fit_predict(self, X):
+
+        """
+        Convenience method for training and predicting.
+
+        Uses the training observations for calibration, so for a
+        proper held-out evaluation prefer fit() followed by
+        calibrate() on a separate dataset.
+        """
+
+        self.fit(X)
+        self.calibrate(X)
+
+        return self.predict(X)
