@@ -1,21 +1,23 @@
 from pathlib import Path
-import numpy as np
 import polars as pl
 import onnx
 from onnx import helper, TensorProto
+from isoforest import *
 
-# Load files
+# Uploaded the paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 MODEL_DIR = BASE_DIR / "models"
 
-INPUT_FILE = DATA_DIR / "weighted_transactions.csv"
+REAL_FILE = DATA_DIR / "transaction_features.csv"
+SYNTHETIC_FILE = DATA_DIR / "synthetic_transactions.csv"
 
-# Get output files
-OUTPUT_FILE = DATA_DIR / "weighted_isolation_forest_results.csv"
-MODEL_FILE = MODEL_DIR / "weighted_isolation_forest.onnx"
+OUTPUT_FILE = DATA_DIR / "weighted_iforest_results.csv"
+SUMMARY_FILE = DATA_DIR / "weighted_iforest_summary.csv"
 
-# Feature Array
+WEIGHTED_MODEL_FILE = MODEL_DIR / "weighted_isolation_forest.onnx"
+
+# Features used in the model
 FEATURES = [
     "compute_units",
     "total_fee_lamports",
@@ -25,290 +27,52 @@ FEATURES = [
     "token_balance_change_count",
 ]
 
-# Hyperparams
+# Model hyperparameters
 N_ESTIMATORS = 200
-MAX_SAMPLES = 256
-CONTAMINATION = 0.6
+MAX_SAMPLES = 512
+CONTAMINATION = 0.05
 RANDOM_STATE = 42
 
+# Real data split proportions
+TRAIN_RATIO = 0.60
+CALIBRATION_RATIO = 0.20
+# Remaining 20% is reserved for testing.
 
-def average_path_length(n):
-    """Expected path length of an unsuccessful search in a binary search tree.
-    Used to normalize Isolation Forest scores. """
-    if n <= 1:
-        return 0.0
 
-    if n == 2:
-        return 1.0
+def load_feature_data(file_path):
+    # Load the data and prep it so that no missing/nulls
 
-    harmonic_number = (
-        np.log(n - 1)
-        + 0.5772156649
-        + (1.0 / (2.0 * (n - 1)))
-        - (1.0 / (12.0 * (n - 1) ** 2))
-    )
+    if not file_path.exists():
+        raise FileNotFoundError(f"Dataset not found: {file_path}")
 
-    return (2.0 * harmonic_number) - (2.0 * (n - 1) / n)
+    df = pl.read_csv(file_path)
 
+    missing = [
+        feature
+        for feature in FEATURES
+        if feature not in df.columns
+    ]
 
-# Use the weights to infulence branching
+    if missing:
+        raise ValueError(f"Missing features in {file_path.name}: {missing}")
 
-# Get a single binary-tree
-class WeightedIsolationTree:
-
-    def __init__(self, feature_weights, max_depth, random_state=None):
-        self.feature_weights = np.asarray(feature_weights, dtype=float)
-        self.feature_weights = np.maximum(self.feature_weights, 0.0)
-        self.max_depth = max_depth
-        self.rng = np.random.default_rng(random_state)
-        self.nodes = []
-
-    # build the treee
-
-    def fit(self, X):
-        indices = np.arange(len(X))
-        self.nodes = []
-        self._build_tree(X, indices, depth=0)
-        return self
-
-    def _build_tree(self, X, indices, depth):
-        node_id = len(self.nodes)
-        self.nodes.append(None)
-
-        n_samples = len(indices)
-
-        if n_samples <= 1 or depth >= self.max_depth:
-            self.nodes[node_id] = {"feature": None, "size": n_samples}
-            return node_id
-
-        subset = X[indices]
-
-        # Find features with variation
-        feature_ranges = np.ptp(subset, axis=0)
-        available_features = np.flatnonzero(feature_ranges > 0)
-
-        # All features are constant
-        if len(available_features) == 0:
-            self.nodes[node_id] = {"feature": None, "size": n_samples}
-            return node_id
-
-        # Get heuristic weights for available features
-        selection_weights = self.feature_weights[available_features]
-
-        # Normalize probabilities
-        if selection_weights.sum() <= 0:
-            probabilities = np.full(
-                len(available_features), 1.0 / len(available_features)
-            )
-        else:
-            probabilities = selection_weights / selection_weights.sum()
-
-        # Feature weighted split selection
-        selected_feature = self.rng.choice(available_features, p=probabilities)
-
-        # Random split between minimum and maximum
-        feature_values = subset[:, selected_feature]
-
-        minimum = feature_values.min()
-        maximum = feature_values.max()
-
-        split_value = self.rng.uniform(minimum, maximum)
-
-        left_mask = feature_values < split_value
-
-        left_indices = indices[left_mask]
-        right_indices = indices[~left_mask]
-
-        # Safety fallback if numerical precision produces an empty partition
-        if len(left_indices) == 0 or len(right_indices) == 0:
-            sorted_values = np.unique(feature_values)
-
-            if len(sorted_values) < 2:
-                self.nodes[node_id] = {"feature": None, "size": n_samples}
-                return node_id
-
-            split_value = (sorted_values[0] + sorted_values[1]) / 2.0
-
-            left_mask = feature_values < split_value
-
-            left_indices = indices[left_mask]
-            right_indices = indices[~left_mask]
-
-        # Recursively build children
-        left_child = self._build_tree(X, left_indices, depth + 1)
-        right_child = self._build_tree(X, right_indices, depth + 1)
-
-        # Store split node
-        self.nodes[node_id] = {
-            "feature": int(selected_feature),
-            "split": float(split_value),
-            "left": left_child,
-            "right": right_child,
-            "size": n_samples,
-        }
-
-        return node_id
-
-    # Calculate the path length to determine if it's going to be anomaly or not
-    def path_length(self, observation):
-        node_id = 0
-        depth = 0
-
-        while True:
-            node = self.nodes[node_id]
-
-            # Leaf node
-            if node["feature"] is None:
-                return depth + average_path_length(node["size"])
-
-            feature = node["feature"]
-            split_value = node["split"]
-
-            if observation[feature] < split_value:
-                node_id = node["left"]
-            else:
-                node_id = node["right"]
-
-            depth += 1
-
-
-# Create the weighted isolation forest
-class WeightedIsolationForest:
-
-    def __init__(
-        self,
-        n_estimators=200,
-        max_samples=256,
-        feature_weights=None,
-        contamination=0.05,
-        random_state=42,
-    ):
-        self.n_estimators = n_estimators
-        self.max_samples = max_samples
-        self.feature_weights = feature_weights
-        self.contamination = contamination
-        self.random_state = random_state
-        self.trees = []
-        self.threshold = None
-        self.sample_size = None
-
-    # train
-    def fit(self, X):
-        X = np.asarray(X, dtype=float)
-        n_samples, n_features = X.shape
-
-        if n_samples < 2:
-            raise ValueError("At least two observations are required.")
-
-        if self.feature_weights is None:
-            self.feature_weights = np.ones(n_features) / n_features
-
-        self.feature_weights = np.asarray(self.feature_weights, dtype=float)
-
-        if len(self.feature_weights) != n_features:
-            raise ValueError("Feature weight count does not match feature count.")
-
-        if (not np.isfinite(self.feature_weights).all() or np.any(self.feature_weights < 0) or self.feature_weights.sum() <= 0):
-            raise ValueError("Feature weights must be finite, nonnegative, and have a positive sum.")
-
-        # Normalize weights
-        self.feature_weights = self.feature_weights / self.feature_weights.sum()
-
-        self.sample_size = min(self.max_samples, n_samples)
-        max_depth = int(np.ceil(np.log2(self.sample_size)))
-
-        rng = np.random.default_rng(self.random_state)
-        self.trees = []
-
-        print("\nBuilding weighted isolation trees...")
-
-        for i in range(self.n_estimators):
-            # Random subsample without replacement
-            sample_indices = rng.choice(
-                n_samples, size=self.sample_size, replace=False
-            )
-            sample = X[sample_indices]
-
-            tree = WeightedIsolationTree(
-                feature_weights=self.feature_weights,
-                max_depth=max_depth,
-                random_state=int(rng.integers(0, 2**32 - 1)),
-            )
-
-            tree.fit(sample)
-            self.trees.append(tree)
-
-            if (i + 1) % 25 == 0:
-                print(f"Built {i + 1}/{self.n_estimators} trees.")
-
-        print("Forest training complete.")
-
-        # Calculate training scores to establish the anomaly threshold
-        training_scores = self.score_samples(X)
-        self.threshold = np.quantile(training_scores, self.contamination)
-
-        return self
-
-    # Anomaly scores
-    def score_samples(self, X):
-        X = np.asarray(X, dtype=float)
-
-        if not self.trees:
-            raise ValueError("Model has not been trained.")
-
-        if self.sample_size <= 1:
-            return np.full(len(X), 0.5)
-
-        path_lengths = np.zeros(len(X))
-
-        for tree in self.trees:
-            for i, observation in enumerate(X):
-                path_lengths[i] += tree.path_length(observation)
-
-        average_paths = path_lengths / len(self.trees)
-        normalization = average_path_length(self.sample_size)
-
-        if normalization == 0:
-            return np.full(len(X), 0.5)
-
-        # Higher score = more anomalous
-        anomaly_scores = np.power(2.0, -average_paths / normalization)
-        return anomaly_scores
-
-    # predictions
-    def predict(self, X):
-        scores = self.score_samples(X)
-
-        # 1 = anomaly, 0 = normal
-        return (scores >= self.threshold).astype(int)
-
-
-# Load data
-def load_data():
-    if not INPUT_FILE.exists():
-        raise FileNotFoundError(f"Dataset not found: {INPUT_FILE}")
-
-    df = pl.read_csv(INPUT_FILE)
-
-    # Convert features to numeric
+    # Convert features to numeric and replace NaNs with nulls.
     df = df.with_columns([
-        pl.col(feature).cast(pl.Float64, strict=False).fill_nan(None)
+        pl.col(feature)
+        .cast(pl.Float64, strict=False)
+        .fill_nan(None)
         for feature in FEATURES
     ])
 
-    # Fill missing values with feature medians
-    medians = {}
+    return df
 
-    for feature in FEATURES:
-        median_value = df[feature].median()
+def prepare_features(df, training_medians):
+    # prep the features for training
 
-        if median_value is None:
-            raise ValueError(f"Feature {feature} contains no valid values.")
-
-        medians[feature] = median_value
-
+    # Use real training medians for both datasets.
     df = df.with_columns([
-        pl.col(feature).fill_null(medians[feature]) for feature in FEATURES
+        pl.col(feature).fill_null(training_medians[feature])
+        for feature in FEATURES
     ])
 
     X = df.select(FEATURES).to_numpy()
@@ -316,53 +80,187 @@ def load_data():
     if not np.isfinite(X).all():
         raise ValueError("Dataset contains infinite or invalid values.")
 
-    print("\nDataset loaded.")
-    print(f"Observations: {df.height}")
-
     return df, X
 
-# Load the heuristic weights
-def load_feature_weights(df):
-    weights = []
-    print("\nLoading heuristic feature weights:")
+def split_real_data(X, random_state=42):
+    # Create the train/test/calibration splits
 
-    for feature in FEATURES:
-        weight_column = f"{feature}_weight"
+    rng = np.random.default_rng(random_state)
+    indices = rng.permutation(len(X))
 
-        if weight_column not in df.columns:
-            raise ValueError(
-                f"Missing weight column: {weight_column}. Run MedianWeights.py first."
-            )
+    # Split into train calibration and then split into train/calibrate/test
+    train_end = int(len(X) * TRAIN_RATIO)
+    calibration_end = int(len(X) * (TRAIN_RATIO + CALIBRATION_RATIO))
 
-        weight = df[weight_column].cast(pl.Float64, strict=False).mean()
+    train_indices = indices[:train_end]
+    calibration_indices = indices[train_end:calibration_end]
+    test_indices = indices[calibration_end:]
 
-        if weight is None or not np.isfinite(weight):
-            raise ValueError(f"Invalid weight for {feature}")
+    if (len(train_indices) < 2 or len(calibration_indices) < 2 or len(test_indices) < 1):
+        raise ValueError("Not enough observations for the requested split.")
 
-        weights.append(weight)
+    return (
+        train_indices,
+        calibration_indices,
+        test_indices,
+    )
 
-    weights = np.asarray(weights, dtype=float)
+def calculate_heuristic_weights(X_train):
+    """
+    Calculate feature-selection weights using real training data.
+    Uses modified Z-scores based on median and MAD.
 
-    if np.any(weights < 0) or weights.sum() <= 0:
-        raise ValueError(
-            "Feature weights must be nonnegative and have a positive sum."
-        )
+    Observations closer to a feature's median receive higher
+    observation weights. The mean observation weight becomes
+    that feature's selection weight.
+    """
 
-    # Normalize to probabilities
-    weights = weights / weights.sum()
+    feature_weights = []
 
-    print("\nFeature selection probabilities:")
-    for feature, weight in zip(FEATURES, weights):
+    for i, feature in enumerate(FEATURES):
+
+        values = X_train[:, i]
+        median = np.median(values)
+        mad = np.median( np.abs(values - median) )
+
+        if mad == 0:
+            weight = 1.0
+        else:
+            modified_z = ( 0.6745 * (values - median) / mad)
+            observation_weights = ( 1.0 / (1.0 + np.abs(modified_z)) )
+            weight = np.mean(observation_weights)
+
+        feature_weights.append(weight)
+
+    feature_weights = np.asarray(feature_weights, dtype=float,)
+    feature_weights /= feature_weights.sum()
+
+    print("\nHeuristic feature-selection weights:")
+
+    for feature, weight in zip(FEATURES, feature_weights):
+
         print(f"{feature}: {weight:.4f} ({weight * 100:.2f}%)")
 
-    return weights
+    return feature_weights
 
+def train_model(X_train, X_calibration, feature_weights,):
 
-# Save model to ONNX
-def export_onnx(model):
-    """Exports our trained  to ONNX format so it can be run efficiently in other environments"""
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    print("\nTraining weighted Isolation Forest")
 
+    # Create the isoforest
+    model = WeightedIsolationForest(
+        n_estimators=N_ESTIMATORS,
+        max_samples=MAX_SAMPLES,
+        feature_weights=feature_weights,
+        contamination=CONTAMINATION,
+        random_state=RANDOM_STATE,
+    )
+
+    # Train the forest using real training observations.
+    model.fit(X_train)
+
+    # Calibrate the anomaly threshold using separate real observations that were not used for training.
+    model.calibrate(X_calibration)
+
+    return model
+
+def evaluate_dataset(df, X, source, model,):
+    # have the model predict and then get the anomalies
+
+    # Score the different rows + eval if anomaly or not
+    scores = model.score_samples(X)
+    predictions = model.predict(X)
+
+    results = df.select(FEATURES).with_columns([
+        pl.lit(source).alias("source"),
+        pl.Series("anomaly_score", scores,),
+        pl.Series("is_anomaly", predictions,),
+    ])
+
+    return results
+
+def summarize_results(results):
+    # Generate and print a summary from the training of the model
+
+    summary_rows = []
+
+    for source in ["Real test", "Synthetic"]:
+        subset = results.filter(pl.col("source") == source)
+        scores = subset["anomaly_score"].to_numpy()
+        predictions = subset["is_anomaly"].to_numpy()
+
+        total = len(predictions)
+
+        if total == 0:
+            continue
+
+        anomaly_count = int(np.sum(predictions == 1))
+
+        row = {
+            "dataset": source,
+            "transactions": total,
+            "anomalies": anomaly_count,
+            "anomaly_percentage": (
+                100.0 * anomaly_count / total
+            ),
+            "mean_score": float(np.mean(scores)),
+            "median_score": float(np.median(scores)),
+            "p95_score": float(np.quantile(scores, 0.95)),
+            "max_score": float(np.max(scores)),
+        }
+
+        summary_rows.append(row)
+
+        print(f"\n{source}")
+
+        print(f"Transactions: {total}")
+        print(f"Anomalies: {anomaly_count}")
+        print(f"Anomaly percentage: {row['anomaly_percentage']:.2f}%")
+        print( f"Mean score: {row['mean_score']:.4f}")
+        print(f"Median score: {row['median_score']:.4f}")
+        print(f"95th percentile: {row['p95_score']:.4f}")
+        print(f"Maximum score: {row['max_score']:.4f}")
+
+    return pl.DataFrame(summary_rows)
+
+def calculate_leaf_depth(nodes, target_node):
+    # Calculates how isolated a node is
+
+    def search(node_id, depth):
+        # Searches for a node by recursively iterating through the tree
+        node = nodes[node_id]
+
+        # return depth if found
+        if node_id == target_node:
+            return depth
+
+        if node["feature"] is None:
+            return None
+
+        # Look Left
+        left_result = search(node["left"], depth + 1,)
+
+        if left_result is not None:
+            return left_result
+
+        # Check right if left isn't found
+        return search(node["right"], depth + 1,)
+
+    result = search(0, 0)
+
+    if result is None:
+        raise ValueError("Could not determine leaf depth.")
+
+    return result
+
+def export_onnx(model, model_file):
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True,)
+
+    if model.threshold is None:
+        raise ValueError("Cannot export an uncalibrated model.")
+
+    # Store the diff vals for ONNX
     nodes_treeids = []
     nodes_nodeids = []
     nodes_featureids = []
@@ -377,35 +275,43 @@ def export_onnx(model):
     target_ids = []
     target_weights = []
 
-    # Convert to format ONNX's TreeEnsembleRegressor expects.
+    # Loop through the trees and nodes
     for tree_id, tree in enumerate(model.trees):
         for node_id, node in enumerate(tree.nodes):
+
             nodes_treeids.append(tree_id)
             nodes_nodeids.append(node_id)
 
             if node["feature"] is None:
+                # Leaf node.
                 nodes_featureids.append(0)
                 nodes_modes.append("LEAF")
                 nodes_values.append(0.0)
 
                 nodes_truenodeids.append(0)
                 nodes_falsenodeids.append(0)
+
                 nodes_missing_value_tracks_true.append(0)
 
-                leaf_path = calculate_leaf_depth(tree.nodes, node_id) + average_path_length(node["size"])
+                # Calculate total path length, including the expected remaining path at the leaf.
+                leaf_path = ( calculate_leaf_depth(tree.nodes, node_id,) + average_path_length(node["size"]) )
 
                 target_treeids.append(tree_id)
                 target_nodeids.append(node_id)
                 target_ids.append(0)
                 target_weights.append(float(leaf_path))
             else:
+                # Internal split node.
                 nodes_featureids.append(node["feature"])
                 nodes_modes.append("BRANCH_LT")
                 nodes_values.append(node["split"])
+
                 nodes_truenodeids.append(node["left"])
                 nodes_falsenodeids.append(node["right"])
+
                 nodes_missing_value_tracks_true.append(0)
 
+    # Tree ensemble calculates the average path length across all trees.
     tree_ensemble = helper.make_node(
         "TreeEnsembleRegressor",
         inputs=["features"],
@@ -421,48 +327,111 @@ def export_onnx(model):
         nodes_values=nodes_values,
         nodes_truenodeids=nodes_truenodeids,
         nodes_falsenodeids=nodes_falsenodeids,
-        nodes_missing_value_tracks_true=nodes_missing_value_tracks_true,
+        nodes_missing_value_tracks_true=(
+            nodes_missing_value_tracks_true
+        ),
         target_treeids=target_treeids,
         target_nodeids=target_nodeids,
         target_ids=target_ids,
         target_weights=target_weights,
     )
 
-    # Grab our normalization constant
     normalization = average_path_length(model.sample_size)
 
     if normalization <= 0:
         raise ValueError("Invalid path-length normalization.")
 
+    # Uses ONNX.helper to create tensors for the weights, threshold for anomaly, and constant
     initializers = [
-        helper.make_tensor("two", TensorProto.FLOAT, [1], [2.0]),
-        helper.make_tensor("normalization", TensorProto.FLOAT, [1], [float(normalization)]),
-        helper.make_tensor("threshold", TensorProto.FLOAT, [1], [float(model.threshold)]),
+        helper.make_tensor(
+            "two",
+            TensorProto.FLOAT,
+            [1],
+            [2.0],
+        ),
+
+        helper.make_tensor(
+            "normalization",
+            TensorProto.FLOAT,
+            [1],
+            [float(normalization)],
+        ),
+
+        helper.make_tensor(
+            "threshold",
+            TensorProto.FLOAT,
+            [1],
+            [float(model.threshold)],
+        ),
     ]
 
-    # Scoring pipeline: Score = 2 ^ (-average_path / normalization)
+    # Convert average path length into anomaly score: score = 2 ^ (-average_path_length / normalization)
+    # Higher scores indicate more anomalous observations. These create nodes for doing diff operations.
     scoring_nodes = [
-        helper.make_node("Neg", ["average_path_length"], ["negative_path"]),
-        helper.make_node("Div", ["negative_path", "normalization"], ["exponent"]),
-        helper.make_node("Pow", ["two", "exponent"], ["anomaly_score"]),
-        # Compare score against threshold (1 = anomaly, 0 = normal)
-        helper.make_node("GreaterOrEqual", ["anomaly_score", "threshold"], ["anomaly_boolean"]),
-        helper.make_node("Cast", ["anomaly_boolean"], ["is_anomaly"], to=TensorProto.INT64),
+
+        helper.make_node(
+            "Neg",
+            ["average_path_length"],
+            ["negative_path"],
+        ),
+
+        helper.make_node(
+            "Div",
+            ["negative_path", "normalization"],
+            ["exponent"],
+        ),
+
+        helper.make_node(
+            "Pow",
+            ["two", "exponent"],
+            ["anomaly_score"],
+        ),
+
+        helper.make_node(
+            "GreaterOrEqual",
+            ["anomaly_score", "threshold"],
+            ["anomaly_boolean"],
+        ),
+
+        helper.make_node(
+            "Cast",
+            ["anomaly_boolean"],
+            ["is_anomaly"],
+            to=TensorProto.INT64,
+        ),
     ]
 
+    # Makes the graph combine tree and scoring nodes, define the inpts/outputs of the model
     graph = helper.make_graph(
-        nodes=[tree_ensemble, *scoring_nodes],
+        nodes=[
+            tree_ensemble,
+            *scoring_nodes,
+        ],
         name="WeightedIsolationForest",
         inputs=[
-            helper.make_tensor_value_info("features", TensorProto.FLOAT, [None, len(FEATURES)])
+            helper.make_tensor_value_info(
+                "features",
+                TensorProto.FLOAT,
+                [None, len(FEATURES)],
+            )
         ],
         outputs=[
-            helper.make_tensor_value_info("anomaly_score", TensorProto.FLOAT, [None, 1]),
-            helper.make_tensor_value_info("is_anomaly", TensorProto.INT64, [None, 1]),
+            helper.make_tensor_value_info(
+                "anomaly_score",
+                TensorProto.FLOAT,
+                [None, 1],
+            ),
+
+            helper.make_tensor_value_info(
+                "is_anomaly",
+                TensorProto.INT64,
+                [None, 1],
+            ),
         ],
         initializer=initializers,
     )
 
+    # Creates the entire model so we can export it using all the logic above
     onnx_model = helper.make_model(
         graph,
         opset_imports=[
@@ -472,135 +441,96 @@ def export_onnx(model):
         producer_name="CSC561-WeightedIsolationForest",
     )
 
+    # Validate the ONNX graph.
     onnx.checker.check_model(onnx_model)
-    onnx.save(onnx_model, str(MODEL_FILE))
 
-    print(f"\nONNX model exported successfully: {MODEL_FILE}")
+    # Save the model.
+    onnx.save(onnx_model, str(model_file),)
 
-
-def calculate_leaf_depth(nodes, target_node):
-    """Helper to find how deep a specific leaf sits within the tree structure."""
-
-    def search(node_id, depth):
-        node = nodes[node_id]
-
-        if node_id == target_node:
-            return depth
-
-        if node["feature"] is None:
-            return None
-
-        left_result = search(node["left"], depth + 1)
-        if left_result is not None:
-            return left_result
-
-        return search(node["right"], depth + 1)
-
-    result = search(0, 0)
-
-    if result is None:
-        raise ValueError("Could not determine leaf depth.")
-
-    return result
-
-def calculate_leaf_depth(nodes, target_node):
-    def search(node_id, depth):
-        node = nodes[node_id]
-        if node_id == target_node:
-            return depth
-        if node["feature"] is None:
-            return None
-        left_result = search(node["left"], depth + 1)
-        if left_result is not None:
-            return left_result
-        return search(node["right"], depth + 1)
-
-    result = search(0, 0)
-    if result is None:
-        raise ValueError("Could not determine leaf depth.")
-    return result
-
-
-def calculate_leaf_depth(nodes, target_node):
-
-    def search(node_id, depth):
-        node = nodes[node_id]
-
-        if node_id == target_node:
-            return depth
-
-        if node["feature"] is None:
-            return None
-
-        left_result = search(node["left"], depth + 1)
-
-        if left_result is not None:
-            return left_result
-
-        return search(node["right"], depth + 1)
-
-    result = search(0, 0)
-
-    if result is None:
-        raise ValueError("Could not determine leaf depth.")
-
-    return result
-
-def save_results(df, predictions, scores):
-    results = df.with_columns([
-        pl.Series("is_anomaly", predictions),
-        pl.Series("anomaly_score", scores),
-    ])
-
-    results.write_csv(OUTPUT_FILE)
-    print(f"\nResults saved: {OUTPUT_FILE}")
-
-def display_results(predictions, scores):
-    total = len(predictions)
-    anomaly_count = int(np.sum(predictions == 1))
-    normal_count = total - anomaly_count
-
-    print(f"Total transactions: {total}")
-    print(f"Normal: {normal_count}")
-    print(f"Anomalies: {anomaly_count}")
-    print(f"Anomaly percentage: {(anomaly_count / total) * 100:.2f}%")
-    print(f"Mean anomaly score: {np.mean(scores):.4f}")
-    print(f"Minimum anomaly score: {np.min(scores):.4f}")
-    print(f"Maximum anomaly score: {np.max(scores):.4f}")
-
-
+    print(f"\nWeighted ONNX model exported successfully:\n {model_file}")
 
 def main():
-    # Load transaction data
-    df, X = load_data()
+    print("\nLoading transaction datasets")
 
-    # Load heuristic weights
-    feature_weights = load_feature_weights(df)
+    real_df = load_feature_data(REAL_FILE)
+    synthetic_df = load_feature_data(SYNTHETIC_FILE)
 
-    # Initialize weighted forest
-    model = WeightedIsolationForest(
-        n_estimators=N_ESTIMATORS,
-        max_samples=MAX_SAMPLES,
-        feature_weights=feature_weights,
-        contamination=CONTAMINATION,
-        random_state=RANDOM_STATE,
+    print(f"Real transactions: {real_df.height}")
+    print(f"Synthetic transactions: {synthetic_df.height}")
+
+    raw_real_X = real_df.select(FEATURES).to_numpy()
+
+    (train_idx, calibration_idx, test_idx,) = split_real_data( raw_real_X,RANDOM_STATE,)
+
+    training_df = real_df[train_idx.tolist()]
+    training_medians = {
+        feature: training_df[feature].median()
+        for feature in FEATURES
+    }
+
+    for feature, median in training_medians.items():
+        if median is None or not np.isfinite(median):
+            raise ValueError(f"No valid training values for {feature}.")
+
+    real_df, X_real = prepare_features(real_df, training_medians,)
+
+    synthetic_df, X_synthetic = prepare_features(synthetic_df, training_medians,)
+
+    X_train = X_real[train_idx]
+    X_calibration = X_real[calibration_idx]
+    X_test = X_real[test_idx]
+
+    print("\nReal data split:")
+
+    print(f"Training: {len(X_train)}")
+    print(f"Calibration: {len(X_calibration)}")
+    print(f"Testing: {len(X_test)}")
+    print(f"Synthetic evaluation: {len(X_synthetic)}")
+
+    print("\nCalculating heuristic feature weights.")
+
+    feature_weights = calculate_heuristic_weights(X_train)
+
+    weighted_model = train_model(X_train, X_calibration, feature_weights,)
+
+    print("\nEvaluating held-out real transactions")
+
+    real_results = evaluate_dataset(
+        real_df[test_idx.tolist()],
+        X_test,
+        "Real test",
+        weighted_model,
     )
 
-    # Train
-    model.fit(X)
+    print("\nEvaluating synthetic transactions")
 
-    # Predict
-    predictions = model.predict(X)
-    scores = model.score_samples(X)
+    synthetic_results = evaluate_dataset(
+        synthetic_df,
+        X_synthetic,
+        "Synthetic",
+        weighted_model,
+    )
 
-    # Display results
-    display_results(predictions, scores)
+    results = pl.concat([real_results, synthetic_results,])
 
-    # Save model
-    export_onnx(model)
+    print("RESULTS")
+    summary = summarize_results(results)
 
-    # Save predictions
-    save_results(df, predictions, scores)
+    results.write_csv(OUTPUT_FILE)
+    print(f"\nTransaction results saved:\n{OUTPUT_FILE}")
+
+    summary.write_csv(SUMMARY_FILE)
+    print(f"\nSummary saved:\n{SUMMARY_FILE}")
+
+    print("\n")
+    print("TOP 10 WEIGHTED ANOMALIES")
+
+    top_anomalies = results.sort("anomaly_score", descending=True,).head(10)
+    print(top_anomalies)
+
+    print("\nExporting weighted ONNX model...")
+
+    export_onnx(weighted_model, WEIGHTED_MODEL_FILE,)
 
 
 if __name__ == "__main__":

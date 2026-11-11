@@ -10,7 +10,6 @@ def average_path_length(n):
     harmonic_number = (np.log(n - 1) + 0.5772156649 + 1.0 / (2.0 * (n - 1)) - 1.0 / (12.0 * (n - 1) ** 2))
     return 2.0 * harmonic_number - 2.0 * (n - 1) / n
 
-
 class WeightedIsolationTree:
     """A single Isolation Tree with weighted feature selection."""
 
@@ -129,7 +128,6 @@ class WeightedIsolationTree:
                 node_id = node["right"]
 
             depth += 1
-
 
 class WeightedIsolationForest:
     """
