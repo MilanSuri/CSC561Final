@@ -1,4 +1,3 @@
-
 import asyncio
 import aiohttp
 import websockets
@@ -11,29 +10,24 @@ import os
 from pathlib import Path
 from datetime import datetime, timezone
 
-# Establish the global vars, files, and IDs, SSL, etc being used throughout the file
-
+# Environment variables and configuration constants
 WSS_URL = os.getenv("WSS_URL")
 RPC_URL = os.getenv("RPC_URL")
-
 RAYDIUM_PROGRAM_ID = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
-
 COMMITMENT = "processed"
 
+# File paths for raw logs and processed CSV features
 DATA_DIR = Path("../../data")
-
 RAW_FILE = DATA_DIR / "raw_transactions.jsonl"
 CSV_FILE = DATA_DIR / "transaction_features.csv"
 
-SSL_CONTEXT = ssl.create_default_context(
-    cafile=certifi.where()
-)
+# SSL context using certified certificates
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 RETRY_ATTEMPTS = 5
 RETRY_DELAY = 1.0
 
-
-# cols
+# Define CSV columns for transaction metrics
 CSV_FIELDS = [
     "signature",
     "slot",
@@ -55,75 +49,39 @@ CSV_FIELDS = [
     "account_keys",
 ]
 
-# file set up
+
 def initialize_files():
-
+    #Ensure data directories and CSV headers exist before running.
     DATA_DIR.mkdir(exist_ok=True)
-
     if not CSV_FILE.exists() or CSV_FILE.stat().st_size == 0:
-
-        with open(
-            CSV_FILE,
-            "w",
-            newline="",
-            encoding="utf-8"
-        ) as file:
-
-            writer = csv.DictWriter(
-                file,
-                fieldnames=CSV_FIELDS
-            )
-
+        with open(CSV_FILE, "w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=CSV_FIELDS)
             writer.writeheader()
 
     print(f"Raw data file: {RAW_FILE}")
     print(f"CSV feature file: {CSV_FILE}")
 
 
-# timestamp each txn
 def utc_now():
-
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    # Return current UTC timestamp in ISO format.
+    return datetime.now(timezone.utc).isoformat()
 
 
-# write a json w the txns
 def write_jsonl(data):
-
-    with open(
-        RAW_FILE,
-        "a",
-        encoding="utf-8"
-    ) as file:
-
-        file.write(
-            json.dumps(data) + "\n"
-        )
+    # Append a raw or enriched transaction record to the JSONL file.
+    with open(RAW_FILE, "a", encoding="utf-8") as file:
+        file.write(json.dumps(data) + "\n")
 
 
-# write csv with txns
 def write_csv(row):
-
-    with open(
-        CSV_FILE,
-        "a",
-        newline="",
-        encoding="utf-8"
-    ) as file:
-
-        writer = csv.DictWriter(
-            file,
-            fieldnames=CSV_FIELDS,
-            extrasaction="ignore"
-        )
-
+    #Add parsed transaction features to the CSV file.
+    with open(CSV_FILE, "a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=CSV_FIELDS, extrasaction="ignore")
         writer.writerow(row)
 
 
-# get txn metadata
 async def get_transaction(session, signature):
-
+    #get full transaction metadata from the Solana RPC provider with retry logic.
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -133,557 +91,250 @@ async def get_transaction(session, signature):
             {
                 "encoding": "json",
                 "commitment": "confirmed",
-                "maxSupportedTransactionVersion": 1
-            }
-        ]
+                "maxSupportedTransactionVersion": 1,
+            },
+        ],
     }
 
     for attempt in range(RETRY_ATTEMPTS):
-
         try:
-
-            async with session.post(
-                RPC_URL,
-                json=payload,
-                ssl=SSL_CONTEXT
-            ) as response:
-
+            async with session.post(RPC_URL, json=payload, ssl=SSL_CONTEXT) as response:
+                # Handle rate limiting (HTTP 429)
                 if response.status == 429:
-
-                    retry_after = response.headers.get(
-                        "Retry-After"
-                    )
-
-                    wait_time = (
-                        float(retry_after)
-                        if retry_after
-                        else min(2 ** attempt, 30)
-                    )
-
-                    print(
-                        f"Rate limited. Retrying in "
-                        f"{wait_time} seconds..."
-                    )
-
+                    retry_after = response.headers.get("Retry-After")
+                    wait_time = float(retry_after) if retry_after else min(2 ** attempt, 30)
+                    print(f"Rate limited. Retrying in {wait_time} seconds")
                     await asyncio.sleep(wait_time)
                     continue
 
                 response.raise_for_status()
-
                 data = await response.json()
 
                 if data.get("error"):
-
-                    print(
-                        f"RPC error: {data['error']}"
-                    )
-
-                    await asyncio.sleep(
-                        min(2 ** attempt, 30)
-                    )
-
+                    print(f"RPC error: {data['error']}")
+                    await asyncio.sleep(min(2 ** attempt, 30))
                     continue
 
                 result = data.get("result")
-
                 if result is not None:
                     return result
 
-                print(
-                    f"Transaction not available yet: "
-                    f"{signature}"
-                )
+                print(f"Transaction not available yet: {signature}")
 
-        except (
-            aiohttp.ClientError,
-            asyncio.TimeoutError,
-            ValueError
-        ) as error:
-
-            print(
-                f"RPC request failed: {error}"
-            )
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as error:
+            print(f"RPC request failed: {error}")
 
         if attempt < RETRY_ATTEMPTS - 1:
-
-            await asyncio.sleep(
-                min(2 ** attempt, 30)
-            )
-
+            await asyncio.sleep(min(2 ** attempt, 30))
     return None
 
-# get the tx/txn features
-def extract_features(tx, notification):
 
+def extract_features(tx, notification):
+    """Extract and flatten structured features from transaction metadata and logs."""
     transaction = tx.get("transaction", {})
     message = transaction.get("message", {})
     meta = tx.get("meta") or {}
 
-    # Account keys
-
-    account_keys = message.get(
-        "accountKeys",
-        []
-    )
-
-    # Handle account keys represented as dictionaries
-
+    # Normalize account keys into a list of strings
+    account_keys = message.get("accountKeys", [])
     normalized_keys = []
-
     for key in account_keys:
-
         if isinstance(key, dict):
-            normalized_keys.append(
-                key.get("pubkey", "")
-            )
-
+            normalized_keys.append(key.get("pubkey", ""))
         else:
             normalized_keys.append(str(key))
 
-    # Instructions
-
-    instructions = message.get(
-        "instructions",
-        []
-    )
-
-    inner_instructions = meta.get(
-        "innerInstructions",
-        []
-    )
-
+    instructions = message.get("instructions", [])
+    inner_instructions = meta.get("innerInstructions", [])
     inner_instruction_count = sum(
-        len(group.get("instructions", []))
-        for group in inner_instructions
+        len(group.get("instructions", [])) for group in inner_instructions
     )
 
-    # Program IDs
-
+    # Collect program IDs invoked by instructions
     program_ids = []
-
     for instruction in instructions:
-
         program_id = instruction.get("programId")
-
         if program_id:
             program_ids.append(program_id)
-
         else:
+            program_index = instruction.get("programIdIndex")
+            if isinstance(program_index, int) and program_index < len(normalized_keys):
+                program_ids.append(normalized_keys[program_index])
 
-            program_index = instruction.get(
-                "programIdIndex"
-            )
-
-            if (
-                isinstance(program_index, int)
-                and program_index < len(normalized_keys)
-            ):
-
-                program_ids.append(
-                    normalized_keys[program_index]
-                )
-
-    # Token balances
-
-    pre_balances = meta.get(
-        "preTokenBalances",
-        []
-    )
-
-    post_balances = meta.get(
-        "postTokenBalances",
-        []
-    )
+    # Parse pre and post token balances
+    pre_balances = meta.get("preTokenBalances", [])
+    post_balances = meta.get("postTokenBalances", [])
 
     pre_amounts = {}
     post_amounts = {}
-
     token_mints = set()
 
     for balance in pre_balances:
-
         mint = balance.get("mint")
         owner = balance.get("owner", "")
         account_index = balance.get("accountIndex")
-
         key = (account_index, mint, owner)
-
-        amount = int(
-            balance.get(
-                "uiTokenAmount", {}
-            ).get("amount", 0)
-        )
-
+        amount = int(balance.get("uiTokenAmount", {}).get("amount", 0))
         pre_amounts[key] = amount
-
         if mint:
             token_mints.add(mint)
 
     for balance in post_balances:
-
         mint = balance.get("mint")
         owner = balance.get("owner", "")
         account_index = balance.get("accountIndex")
-
         key = (account_index, mint, owner)
-
-        amount = int(
-            balance.get(
-                "uiTokenAmount", {}
-            ).get("amount", 0)
-        )
-
+        amount = int(balance.get("uiTokenAmount", {}).get("amount", 0))
         post_amounts[key] = amount
-
         if mint:
             token_mints.add(mint)
 
-    # Calculate token balance changes
-
-    all_balance_keys = (
-        set(pre_amounts.keys())
-        | set(post_amounts.keys())
-    )
-
+    # Calculate token balance changes across accounts
+    all_balance_keys = set(pre_amounts.keys()) | set(post_amounts.keys())
     token_balance_changes = {}
 
     for key in all_balance_keys:
-
         before = pre_amounts.get(key, 0)
         after = post_amounts.get(key, 0)
-
         difference = after - before
-
         if difference != 0:
-
             account_index, mint, owner = key
-
-            change_key = (
-                f"{account_index}:{mint}:{owner}"
-            )
-
+            change_key = f"{account_index}:{mint}:{owner}"
             token_balance_changes[change_key] = difference
 
-    # Transaction metadata
+    notification_value = notification.get("params", {}).get("result", {}).get("value", {})
+    context = notification.get("params", {}).get("result", {}).get("context", {})
 
-    notification_value = (
-        notification.get("params", {})
-        .get("result", {})
-        .get("value", {})
-    )
-
-    context = (
-        notification.get("params", {})
-        .get("result", {})
-        .get("context", {})
-    )
-
+    # Build final row dictionary for CSV output
     row = {
-
-        "signature": transaction.get(
-            "signatures",
-            [""]
-        )[0],
-
-        "slot": context.get(
-            "slot",
-            tx.get("slot", "")
-        ),
-
-        "notification_time": notification_value.get(
-            "_received_at",
-            ""
-        ),
-
+        "signature": transaction.get("signatures", [""])[0],
+        "slot": context.get("slot", tx.get("slot", "")),
+        "notification_time": notification_value.get("_received_at", ""),
         "enrichment_time": utc_now(),
-
         "enrichment_commitment": "confirmed",
-
-        "notification_error": json.dumps(
-            notification_value.get("err")
-        ),
-
-        "transaction_error": json.dumps(
-            meta.get("err")
-        ),
-
-        "block_time": tx.get(
-            "blockTime"
-        ),
-
-        "compute_units": meta.get(
-            "computeUnitsConsumed"
-        ),
-
-        "total_fee_lamports": meta.get(
-            "fee"
-        ),
-
-        "account_count": len(
-            normalized_keys
-        ),
-
-        "instruction_count": len(
-            instructions
-        ),
-
+        "notification_error": json.dumps(notification_value.get("err")),
+        "transaction_error": json.dumps(meta.get("err")),
+        "block_time": tx.get("blockTime"),
+        "compute_units": meta.get("computeUnitsConsumed"),
+        "total_fee_lamports": meta.get("fee"),
+        "account_count": len(normalized_keys),
+        "instruction_count": len(instructions),
         "inner_instruction_count": inner_instruction_count,
-
-        "program_ids": json.dumps(
-            list(set(program_ids))
-        ),
-
-        "token_mints": json.dumps(
-            sorted(token_mints)
-        ),
-
-        "token_balance_change_count": len(
-            token_balance_changes
-        ),
-
-        "token_balance_changes": json.dumps(
-            token_balance_changes
-        ),
-
-        "account_keys": json.dumps(
-            normalized_keys
-        ),
+        "program_ids": json.dumps(list(set(program_ids))),
+        "token_mints": json.dumps(sorted(token_mints)),
+        "token_balance_change_count": len(token_balance_changes),
+        "token_balance_changes": json.dumps(token_balance_changes),
+        "account_keys": json.dumps(normalized_keys),
     }
 
     return row
 
-# stream from hyperliquid
+
 async def stream_transactions():
-
+    #Connect to the Solana WebSocket logs feed and process incoming Raydium transactions. Raydium is a DEX and AMM
     if not WSS_URL:
-
-        raise ValueError(
-            "WSS_URL environment variable is missing."
-        )
-
+        raise ValueError("WSS_URL environment variable is missing.")
     if not RPC_URL:
-
-        raise ValueError(
-            "RPC_URL environment variable is missing."
-        )
+        raise ValueError("RPC_URL environment variable is missing.")
 
     initialize_files()
-
     processed_signatures = set()
 
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=30)
-    ) as session:
-
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         async with websockets.connect(
-            WSS_URL,
-            ssl=SSL_CONTEXT,
-            ping_interval=20,
-            ping_timeout=20
+            WSS_URL, ssl=SSL_CONTEXT, ping_interval=20, ping_timeout=20
         ) as websocket:
-
             print("\nConnected to Solana WebSocket.")
 
+            # Subscribe to logs mentioning the Raydium program ID
             subscribe_payload = {
-
                 "jsonrpc": "2.0",
-
                 "id": 1,
-
                 "method": "logsSubscribe",
-
                 "params": [
-
-                    {
-                        "mentions": [
-                            RAYDIUM_PROGRAM_ID
-                        ]
-                    },
-
-                    {
-                        "commitment": COMMITMENT
-                    }
-                ]
+                    {"mentions": [RAYDIUM_PROGRAM_ID]},
+                    {"commitment": COMMITMENT},
+                ],
             }
 
-            await websocket.send(
-                json.dumps(subscribe_payload)
-            )
-
-            subscription_response = json.loads(
-                await websocket.recv()
-            )
-
-            print(
-                "Subscription response:",
-                subscription_response
-            )
-
-            print(
-                "\nListening for transactions...\n"
-            )
+            await websocket.send(json.dumps(subscribe_payload))
+            subscription_response = json.loads(await websocket.recv())
+            print("Subscription response:", subscription_response)
+            print("\nListening for transactions...\n")
 
             while True:
-
                 message = await websocket.recv()
-
                 notification = json.loads(message)
 
-                # Ignore non-notification messages
-
-                if (
-                    notification.get("method")
-                    != "logsNotification"
-                ):
-
+                # Filter for log notifications only
+                if notification.get("method") != "logsNotification":
                     continue
 
-                params = notification.get(
-                    "params",
-                    {}
-                )
+                params = notification.get("params", {})
+                result = params.get("result", {})
+                context = result.get("context", {})
+                value = result.get("value", {})
 
-                result = params.get(
-                    "result",
-                    {}
-                )
-
-                context = result.get(
-                    "context",
-                    {}
-                )
-
-                value = result.get(
-                    "value",
-                    {}
-                )
-
-                signature = value.get(
-                    "signature"
-                )
-
-                slot = context.get(
-                    "slot"
-                )
+                signature = value.get("signature")
+                slot = context.get("slot")
 
                 if not signature:
                     continue
 
-                # Skip duplicate notifications
-
+                # Avoid processing duplicate signatures
                 if signature in processed_signatures:
                     continue
 
                 processed_signatures.add(signature)
-
                 notification_time = utc_now()
+                value["_received_at"] = notification_time
 
-                value["_received_at"] = (
-                    notification_time
-                )
-
-                print("--------------------------------")
                 print("New transaction notification")
                 print("Signature:", signature)
                 print("Slot:", slot)
                 print("Error:", value.get("err"))
 
-                # Save raw notification immediately
+                # Log raw notification
+                write_jsonl({"type": "notification", "data": notification})
 
-                write_jsonl({
-                    "type": "notification",
-                    "data": notification
-                })
-
-                # Retrieve full transaction metadata
-
-                tx_result = await get_transaction(
-                    session,
-                    signature
-                )
+                # Fetch full transaction details via RPC
+                tx_result = await get_transaction(session, signature)
 
                 if tx_result is None:
-
-                    print(
-                        "Could not retrieve transaction metadata."
-                    )
-
+                    print("Could not retrieve transaction metadata.")
                     write_jsonl({
                         "type": "enrichment_failed",
                         "signature": signature,
                         "slot": slot,
-                        "time": utc_now()
+                        "time": utc_now(),
                     })
-
                     continue
 
-                # Save enriched transaction
+                # Log enriched transaction payload
+                write_jsonl({"type": "enriched_transaction", "signature": signature, "data": tx_result})
 
-                write_jsonl({
-                    "type": "enriched_transaction",
-                    "signature": signature,
-                    "data": tx_result
-                })
-
-                # Extract features
-
-                features = extract_features(
-                    tx_result,
-                    notification
-                )
-
-                # Append features to CSV
-
+                # Extract features and save to CSV
+                features = extract_features(tx_result, notification)
                 write_csv(features)
 
                 print("\nTransaction enriched and saved.")
+                print("Compute units:", features["compute_units"])
+                print("Fee:", features["total_fee_lamports"])
+                print("Accounts:", features["account_count"])
+                print("Instructions:", features["instruction_count"])
+                print("Token balance changes:", features["token_balance_change_count"])
+                print(f"CSV updated: {CSV_FILE}")
 
-                print(
-                    "Compute units:",
-                    features["compute_units"]
-                )
-
-                print(
-                    "Fee:",
-                    features["total_fee_lamports"]
-                )
-
-                print(
-                    "Accounts:",
-                    features["account_count"]
-                )
-
-                print(
-                    "Instructions:",
-                    features["instruction_count"]
-                )
-
-                print(
-                    "Token balance changes:",
-                    features["token_balance_change_count"]
-                )
-
-                print(
-                    f"CSV updated: {CSV_FILE}"
-                )
 
 async def main():
-
+    #Main entry point for running the async transaction streaming pipeline.
     try:
-
         await stream_transactions()
-
     except KeyboardInterrupt:
-
         print("\nStopping transaction collector.")
-
     except Exception as error:
-
-        print(
-            f"\nPipeline error: {error}"
-        )
+        print(f"\nPipeline error: {error}")
 
 
 if __name__ == "__main__":
-
     asyncio.run(main())

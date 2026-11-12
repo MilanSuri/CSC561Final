@@ -198,7 +198,6 @@ def generate_synthetic_data(synthesizer):
 
     return synthetic_pdf.reset_index(drop=True)
 
-
 def validate_synthetic_data(synthetic_pdf):
     # Validation of the synthetic data
 

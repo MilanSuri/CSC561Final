@@ -528,7 +528,7 @@ def main():
     top_anomalies = results.sort("anomaly_score", descending=True,).head(10)
     print(top_anomalies)
 
-    print("\nExporting weighted ONNX model...")
+    print("\nExporting weighted ONNX model")
 
     export_onnx(weighted_model, WEIGHTED_MODEL_FILE,)
 
