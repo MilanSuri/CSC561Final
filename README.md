@@ -23,41 +23,46 @@ To view the architecture and the whitepaper of the project in more depth view: `
 
 ## Architecture Diagram:
 ```mermaid
-graph TD
-    subgraph Ingestion ["Data Ingestion"]
-        A[Solana Network / Raydium AMM] -->|Helius RPC WebSocket / gRPC| B[DPDK Kernel Bypass / NIC]
-        B --> C["Ingestion Workers (Pinned Threads)"]
+flowchart TD
+    subgraph Ingestion ["DATA INGESTION"]
+        A["Solana Network / Raydium AMM"] -->|Helius RPC WebSocket / gRPC| B["DPDK Kernel Bypass / NIC"]
+        B --> C["Ingestion Workers<br/>(Pinned Threads)"]
     end
 
-    subgraph Queue ["Concurrency & Buffering"]
-        C --> D[Pre-allocated Lock-Free Ring-Buffers]
+    subgraph Queue ["CONCURRENCY & BUFFERING"]
+        C --> D["Pre-allocated Lock-Free<br/>Ring Buffers"]
     end
 
-    subgraph Inference ["Inference Pipeline (C++ / ONNX)"]
-        D --> E[Metadata Retrieval & Enrichment]
-        E --> F["Feature Extraction <br/><i>(6 Execution Features)</i>"]
-        F --> G["Weighted Isolation Forest <br/><i>(ONNX Runtime Execution)</i>"]
+    subgraph Inference ["INFERENCE PIPELINE - C++ / ONNX"]
+        D --> E["Metadata Retrieval<br/>& Enrichment"]
+        E --> F["Feature Extraction<br/>(6 Execution Features)"]
+        F --> G["Weighted Isolation Forest<br/>(ONNX Runtime)"]
     end
 
-    subgraph Output ["Scoring & Audit"]
-        G --> H["Anomaly Score <br/>vs. Threshold"]
-        H -->|Above Threshold| I[Classified as Anomalous]
-        H -->|Below Threshold| J[Classified as Normal]
-        
-        %% Off-path audit
-        G -.->|Off-Hot-Path| K["SHAP Value Generation & Storage <br/><i>(Audit & Interpretability)</i>"]
+    subgraph Output ["SCORING & AUDIT"]
+        G --> H["Anomaly Score<br/>vs. Threshold"]
+        H -->|Above Threshold| I["CLASSIFIED AS ANOMALOUS"]
+        H -->|Below Threshold| J["CLASSIFIED AS NORMAL"]
+        G -.->|Off-Hot-Path| K["SHAP Value Generation<br/>& Storage<br/>(Audit & Interpretability)"]
     end
 
-    %% Section Styling
-    style Ingestion fill:#f9f,stroke:#333,stroke-width:2px
-    style Queue fill:#bbf,stroke:#333,stroke-width:2px
-    style Inference fill:#bfb,stroke:#333,stroke-width:2px
-    style Output fill:#fff3cd,stroke:#333,stroke-width:2px
+    style Ingestion fill:#E8F1FF,stroke:#2563EB,stroke-width:2px,color:#172554
+    style Queue fill:#F0EAFE,stroke:#7C3AED,stroke-width:2px,color:#2E1065
+    style Inference fill:#E8F8EF,stroke:#15803D,stroke-width:2px,color:#14532D
+    style Output fill:#FFF7E6,stroke:#D97706,stroke-width:2px,color:#78350F
 
-    %% Node Highlighting for Scoring & Audit
-    style I fill:#ff7675,stroke:#333,stroke-width:2px,color:#fff
-    style J fill:#55efc4,stroke:#333,stroke-width:2px,color:#000
-    style K fill:#74b9ff,stroke:#333,stroke-width:2px,color:#000
+    style A fill:#FFFFFF,stroke:#64748B,color:#111827
+    style B fill:#FFFFFF,stroke:#64748B,color:#111827
+    style C fill:#FFFFFF,stroke:#64748B,color:#111827
+    style D fill:#FFFFFF,stroke:#64748B,color:#111827
+    style E fill:#FFFFFF,stroke:#64748B,color:#111827
+    style F fill:#FFFFFF,stroke:#64748B,color:#111827
+    style G fill:#FFFFFF,stroke:#64748B,color:#111827
+    style H fill:#FFFFFF,stroke:#64748B,color:#111827
+
+    style I fill:#FEE2E2,stroke:#DC2626,stroke-width:2px,color:#7F1D1D
+    style J fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#14532D
+    style K fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#1E3A8A
+
+    linkStyle default stroke:#64748B,stroke-width:1.5px
 ```
-
-
