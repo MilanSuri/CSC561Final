@@ -24,30 +24,22 @@ To view the architecture and the whitepaper of the project in more depth view: `
 ## Architecture Diagram:
 ```mermaid
 graph TD
-    subgraph Key ["Legend / Key"]
-        direction TB
-        K1["1. Ingestion Layer"]
-        K2["2. Concurrency & Buffering"]
-        K3["3. Inference Pipeline"]
-        K4["4. Scoring & Audit"]
-    end
-
-    subgraph Ingestion ["1. Data Ingestion Layer"]
+    subgraph Ingestion ["Data Ingestion"]
         A[Solana Network / Raydium AMM] -->|Helius RPC WebSocket / gRPC| B[DPDK Kernel Bypass / NIC]
         B --> C["Ingestion Workers (Pinned Threads)"]
     end
 
-    subgraph Queue ["2. Concurrency & Buffering"]
+    subgraph Queue ["Concurrency & Buffering"]
         C --> D[Pre-allocated Lock-Free Ring-Buffers]
     end
 
-    subgraph Inference ["3. Inference Pipeline (C++ / ONNX Runtime)"]
+    subgraph Inference ["Inference Pipeline (C++ / ONNX)"]
         D --> E[Metadata Retrieval & Enrichment]
         E --> F["Feature Extraction <br/><i>(6 Execution Features)</i>"]
         F --> G["Weighted Isolation Forest <br/><i>(ONNX Runtime Execution)</i>"]
     end
 
-    subgraph Output ["4. Scoring & Audit"]
+    subgraph Output ["Scoring & Audit"]
         G --> H["Anomaly Score <br/>vs. Threshold"]
         H -->|Above Threshold| I[Classified as Anomalous]
         H -->|Below Threshold| J[Classified as Normal]
@@ -57,7 +49,6 @@ graph TD
     end
 
     %% Styling
-    style Key fill:#ffffff,stroke:#999,stroke-width:1px,stroke-dasharray: 3 3
     style Ingestion fill:#f9f,stroke:#333,stroke-width:2px
     style Queue fill:#bbf,stroke:#333,stroke-width:2px
     style Inference fill:#bfb,stroke:#333,stroke-width:2px
