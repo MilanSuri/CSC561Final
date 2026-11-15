@@ -48,11 +48,16 @@ graph TD
         G -.->|Off-Hot-Path| K["SHAP Value Generation & Storage <br/><i>(Audit & Interpretability)</i>"]
     end
 
-    %% Styling
+    %% Section Styling
     style Ingestion fill:#f9f,stroke:#333,stroke-width:2px
     style Queue fill:#bbf,stroke:#333,stroke-width:2px
     style Inference fill:#bfb,stroke:#333,stroke-width:2px
-    style Output fill:#ff9,stroke:#333,stroke-width:2px
+    style Output fill:#fff3cd,stroke:#333,stroke-width:2px
+
+    %% Node Highlighting for Scoring & Audit
+    style I fill:#ff7675,stroke:#333,stroke-width:2px,color:#fff
+    style J fill:#55efc4,stroke:#333,stroke-width:2px,color:#000
+    style K fill:#74b9ff,stroke:#333,stroke-width:2px,color:#000
 ```
 
 
