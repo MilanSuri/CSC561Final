@@ -27,7 +27,7 @@ graph TD
     %% Data Ingestion Layer
     subgraph Ingestion ["1. Data Ingestion Layer"]
         A[Solana Network / Raydium AMM] -->|Helius RPC WebSocket / gRPC| B[DPDK Kernel Bypass / NIC]
-        B --> C[Ingestion Workers (Pinned Threads)]
+        B --> C["Ingestion Workers (Pinned Threads)"]
     end
 
     %% Memory & Queuing Layer
@@ -38,18 +38,18 @@ graph TD
     %% Inference Engine Layer
     subgraph Inference ["3. Inference Pipeline (C++ / ONNX Runtime)"]
         D --> E[Metadata Retrieval & Enrichment]
-        E --> F[Feature Extraction <br/><i>(6 Execution Features)</i>]
-        F --> G[Weighted Isolation Forest <br/><i>(ONNX Runtime Execution)</i>]
+        E --> F["Feature Extraction <br/><i>(6 Execution Features)</i>"]
+        F --> G["Weighted Isolation Forest <br/><i>(ONNX Runtime Execution)</i>"]
     end
 
     %% Decision & Audit Layer
     subgraph Output ["4. Scoring & Audit"]
-        G --> H{Anomaly Score <br/>vs. Threshold}
+        G --> H["Anomaly Score <br/>vs. Threshold"]
         H -->|Above Threshold| I[Classified as Anomalous]
         H -->|Below Threshold| J[Classified as Normal]
         
         %% Off-path audit
-        G -.->|Off-Hot-Path| K[SHAP Value Generation & Storage <br/><i>(Audit & Interpretability)</i>]
+        G -.->|Off-Hot-Path| K["SHAP Value Generation & Storage <br/><i>(Audit & Interpretability)</i>"]
     end
 
     %% Styling
