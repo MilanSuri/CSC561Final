@@ -23,46 +23,59 @@ To view the architecture and the whitepaper of the project in more depth view: `
 
 ## Architecture Diagram:
 ```mermaid
+
 flowchart TD
-    subgraph Ingestion ["DATA INGESTION"]
-        A["Solana Network / Raydium AMM"] -->|Helius RPC WebSocket / gRPC| B["DPDK Kernel Bypass / NIC"]
-        B --> C["Ingestion Workers<br/>(Pinned Threads)"]
+    subgraph ING["DATA INGESTION"]
+        A["Solana Network"]
+        A --> B["Pre-Finality Transaction Feed<br/>(Processed Transactions)"]
+        B --> C["Ingestion Pipeline<br/>(Helius LaserStream / gRPC)"]
     end
 
-    subgraph Queue ["CONCURRENCY & BUFFERING"]
-        C --> D["Pre-allocated Lock-Free<br/>Ring Buffers"]
+    subgraph FAST["STAGE 1 — PRE-FINALITY SCREENING"]
+        C --> D["Transaction Sender Extraction"]
+        D --> E["Address Anomaly Lookup Table"]
+        E --> F{"Historical Anomaly Rate<br/>Above Threshold?"}
+        F -->|Yes| G["Preliminary Risk Flag"]
+        F -->|No| H["No Preliminary Flag"]
+        G --> I["Preliminary Screening Results"]
+        H --> I
     end
 
-    subgraph Inference ["INFERENCE PIPELINE - C++ / ONNX"]
-        D --> E["Metadata Retrieval<br/>& Enrichment"]
-        E --> F["Feature Extraction<br/>(6 Execution Features)"]
-        F --> G["Weighted Isolation Forest<br/>(ONNX Runtime)"]
+    subgraph FINAL["FINALITY & DATA ENRICHMENT"]
+        A --> J["Transaction Finalization"]
+        J --> K["Finalized Transaction Data"]
+        K --> L["Metadata Retrieval & Enrichment"]
+        L --> M["Feature Extraction<br/>(6 Execution Features)"]
     end
 
-    subgraph Output ["SCORING & AUDIT"]
-        G --> H["Anomaly Score<br/>vs. Threshold"]
-        H -->|Above Threshold| I["CLASSIFIED AS ANOMALOUS"]
-        H -->|Below Threshold| J["CLASSIFIED AS NORMAL"]
-        G -.->|Off-Hot-Path| K["SHAP Value Generation<br/>& Storage<br/>(Audit & Interpretability)"]
+    subgraph INFERENCE["STAGE 2 — FULL INFERENCE"]
+        M --> N["Weighted Isolation Forest<br/>(C++ / ONNX Runtime)"]
+        N --> O["Anomaly Score"]
+        O --> P{"Score Above<br/>Calibrated Threshold?"}
+        P -->|Yes| Q["Statistically Anomalous"]
+        P -->|No| R["Within Baseline"]
     end
 
-    style Ingestion fill:#E8F1FF,stroke:#2563EB,stroke-width:2px,color:#172554
-    style Queue fill:#F0EAFE,stroke:#7C3AED,stroke-width:2px,color:#2E1065
-    style Inference fill:#E8F8EF,stroke:#15803D,stroke-width:2px,color:#14532D
-    style Output fill:#FFF7E6,stroke:#D97706,stroke-width:2px,color:#78350F
+    subgraph BACKGROUND["BACKGROUND PROCESSING — OFF HOT PATH"]
+        Q --> S["Historical Transaction Statistics"]
+        R --> S
+        S --> T["Update Address Anomaly Rates"]
+        T --> E
+        S --> U["Moving MAD / Robust<br/>Statistical Baseline Updates"]
+        U --> V["Update Heuristic Feature Weights"]
+        V --> N
+        N -.-> W["SHAP Feature Attribution"]
+        W --> X["Audit Logs & Model Explanations"]
+    end
 
-    style A fill:#FFFFFF,stroke:#64748B,color:#111827
-    style B fill:#FFFFFF,stroke:#64748B,color:#111827
-    style C fill:#FFFFFF,stroke:#64748B,color:#111827
-    style D fill:#FFFFFF,stroke:#64748B,color:#111827
-    style E fill:#FFFFFF,stroke:#64748B,color:#111827
-    style F fill:#FFFFFF,stroke:#64748B,color:#111827
-    style G fill:#FFFFFF,stroke:#64748B,color:#111827
-    style H fill:#FFFFFF,stroke:#64748B,color:#111827
+    style ING fill:#E8F1FF,stroke:#2563EB,color:#172554
+    style FAST fill:#FFF7E6,stroke:#D97706,color:#78350F
+    style FINAL fill:#F0EAFE,stroke:#7C3AED,color:#2E1065
+    style INFERENCE fill:#E8F8EF,stroke:#15803D,color:#14532D
+    style BACKGROUND fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A
 
-    style I fill:#FEE2E2,stroke:#DC2626,stroke-width:2px,color:#7F1D1D
-    style J fill:#DCFCE7,stroke:#16A34A,stroke-width:2px,color:#14532D
-    style K fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#1E3A8A
-
-    linkStyle default stroke:#64748B,stroke-width:1.5px
+    style G fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D
+    style Q fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D
+    style R fill:#DCFCE7,stroke:#16A34A,color:#14532D
+    style X fill:#FFFFFF,stroke:#2563EB,color:#1E3A8A
 ```
